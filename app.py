@@ -4,6 +4,7 @@ import folium
 from streamlit_folium import st_folium
 import pandas as pd
 from folium.plugins import MarkerCluster
+import plotly.express as px
 
 # Substitua pelo seu token
 API_TOKEN = 'edfe25257c6da1492d01022aec83cd8c360c9bedde6636d16fd092692a57862c'
@@ -41,7 +42,8 @@ def transformar_dados_em_dataframe(dados):
             for veiculo in linha.get('vs', []):
                 veiculo.update({
                     'cl': linha['cl'],
-                    'lt_desc': f"{linha['lt0']} - {linha['lt1']}"
+                    'lt_desc': f"{linha['lt0']} - {linha['lt1']}",
+                    'terminal': identificar_terminal(veiculo['py'], veiculo['px'])
                 })
                 veiculos.append(veiculo)
         df = pd.DataFrame(veiculos)
@@ -49,8 +51,21 @@ def transformar_dados_em_dataframe(dados):
         df['longitude'] = df['px']
         df['ativo'] = df['a']
         df['ultima_atualizacao'] = pd.to_datetime(df['ta'])
-        return df[['latitude', 'longitude', 'p', 'ativo', 'ultima_atualizacao', 'lt_desc', 'cl']]
+        return df[['latitude', 'longitude', 'p', 'ativo', 'ultima_atualizacao', 'lt_desc', 'cl', 'terminal']]
     return pd.DataFrame()
+
+# Função para identificar terminais conhecidos por coordenadas (manual)
+def identificar_terminal(lat, lon):
+    terminais = {
+        (-23.5211, -46.6828): "Terminal Barra Funda",
+        (-23.5505, -46.6333): "Terminal São Paulo",
+        (-23.6028, -46.7351): "Terminal Jabaquara",
+        (-23.4789, -46.6267): "Terminal Santana"
+    }
+    for (t_lat, t_lon), nome_terminal in terminais.items():
+        if abs(lat - t_lat) < 0.001 and abs(lon - t_lon) < 0.001:
+            return nome_terminal
+    return "Local desconhecido"
 
 # Função para criar um mapa com clusters
 def criar_mapa_com_clusters(df_onibus):
@@ -63,7 +78,8 @@ def criar_mapa_com_clusters(df_onibus):
             <b>Código do Ônibus:</b> {row['p']}<br>
             <b>Ativo:</b> {"Sim" if row['ativo'] else "Não"}<br>
             <b>Linha:</b> {row['lt_desc']}<br>
-            <b>Última atualização:</b> {row['ultima_atualizacao']}
+            <b>Última atualização:</b> {row['ultima_atualizacao']}<br>
+            <b>Terminal:</b> {row['terminal']}
         </div>
         """
         icon = folium.Icon(color='blue', icon='bus', prefix='fa')
@@ -74,6 +90,36 @@ def criar_mapa_com_clusters(df_onibus):
         ).add_to(marker_cluster)
 
     return mapa
+
+# Função para exibir gráficos dinâmicos usando Plotly
+def exibir_graficos(df_onibus):
+    st.subheader("Análises Gráficas")
+    col1, col2 = st.columns(2)
+
+    # Gráfico de Distribuição de Ônibus Ativos e Inativos
+    with col1:
+        status_counts = df_onibus['ativo'].value_counts()
+        fig = px.bar(
+            x=status_counts.index.map({True: 'Ativos', False: 'Inativos'}),
+            y=status_counts.values,
+            labels={'x': 'Status', 'y': 'Quantidade'},
+            title='Ônibus Ativos vs Inativos',
+            color=status_counts.index.map({True: 'Ativos', False: 'Inativos'}),
+            color_discrete_map={'Ativos': 'green', 'Inativos': 'red'}
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Gráfico de Distribuição de Ônibus por Linha
+    with col2:
+        linhas_counts = df_onibus['lt_desc'].value_counts().head(5)
+        fig2 = px.bar(
+            x=linhas_counts.values,
+            y=linhas_counts.index,
+            orientation='h',
+            labels={'x': 'Número de Ônibus', 'y': 'Linhas'},
+            title='Top 5 Linhas com Mais Ônibus'
+        )
+        st.plotly_chart(fig2, use_container_width=True)
 
 # Função principal
 def main():
@@ -86,27 +132,36 @@ def main():
             df_onibus = transformar_dados_em_dataframe(dados)
 
             if not df_onibus.empty:
-                # Obter as linhas disponíveis para o selectbox e adicionar a opção "Todos"
-                linhas_disponiveis = ['Todos'] + df_onibus['lt_desc'].unique().tolist()
+                # Calcular totais gerais para o painel de controle
+                total_onibus_geral = len(df_onibus)
+                total_ativos_geral = df_onibus['ativo'].sum()
+                total_inativos_geral = total_onibus_geral - total_ativos_geral
+                ultima_atualizacao_geral = df_onibus['ultima_atualizacao'].max()
+
+                # Obter as linhas disponíveis para o selectbox
+                linhas_disponiveis = df_onibus['lt_desc'].unique().tolist()
                 linha_selecionada = st.selectbox("Selecione a linha de ônibus", options=linhas_disponiveis)
 
-                # Filtrar o DataFrame pela linha selecionada, se não for "Todos"
-                if linha_selecionada != 'Todos':
-                    df_filtrado = df_onibus[df_onibus['lt_desc'] == linha_selecionada]
-                else:
-                    df_filtrado = df_onibus
+                # Filtro de status dos ônibus (ativos/inativos)
+                status_selecionado = st.sidebar.selectbox(
+                    "Filtrar por Status",
+                    options=["Todos", "Ativos", "Inativos"]
+                )
 
-                # Painel de controle com métricas
-                total_onibus = len(df_filtrado)
-                total_ativos = df_filtrado['ativo'].sum()
-                total_inativos = total_onibus - total_ativos
-                ultima_atualizacao = df_filtrado['ultima_atualizacao'].max()
+                # Filtrar o DataFrame pela linha e status selecionado
+                df_filtrado = df_onibus[df_onibus['lt_desc'] == linha_selecionada]
 
+                if status_selecionado == "Ativos":
+                    df_filtrado = df_filtrado[df_filtrado['ativo']]
+                elif status_selecionado == "Inativos":
+                    df_filtrado = df_filtrado[~df_filtrado['ativo']]
+
+                # Painel de controle com métricas gerais
                 st.sidebar.header("Painel de Controle")
-                st.sidebar.metric("Total de Ônibus", total_onibus)
-                st.sidebar.metric("Ônibus Ativos", total_ativos)
-                st.sidebar.metric("Ônibus Inativos", total_inativos)
-                st.sidebar.metric("Última Atualização", ultima_atualizacao.strftime("%Y-%m-%d %H:%M:%S"))
+                st.sidebar.metric("Total de Ônibus", total_onibus_geral)
+                st.sidebar.metric("Ônibus Ativos", total_ativos_geral)
+                st.sidebar.metric("Ônibus Inativos", total_inativos_geral)
+                st.sidebar.metric("Última Atualização", ultima_atualizacao_geral.strftime("%Y-%m-%d %H:%M:%S"))
 
                 # Exibir o mapa com os ônibus filtrados
                 if not df_filtrado.empty:
@@ -115,6 +170,10 @@ def main():
                     st.write(f"Total de ônibus plotados: {len(df_filtrado)}")
                 else:
                     st.warning("Nenhum dado de ônibus disponível para exibir no mapa.")
+
+                # Exibir gráficos dinâmicos abaixo do mapa
+                exibir_graficos(df_onibus)
+
             else:
                 st.warning("Nenhum dado de ônibus disponível.")
         else:
